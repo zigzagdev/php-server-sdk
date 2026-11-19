@@ -5,6 +5,7 @@ namespace LaunchDarkly\Tests\Impl\Events;
 use LaunchDarkly\Impl\Events\EventSerializer;
 use LaunchDarkly\LDContext;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 
 class EventSerializerTest extends TestCase
 {
@@ -289,6 +290,51 @@ class EventSerializerTest extends TestCase
             ]
         ]);
         $this->assertEquals([$expected], json_decode($json, true));
+    }
+
+    public function testEventWithInvalidUtf8IsDroppedAndOtherEventsAreKept()
+    {
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects($this->once())
+            ->method('warning')
+            ->with($this->stringContains('"identify"'));
+        $es = new EventSerializer(['logger' => $logger]);
+
+        $json = $es->serializeEvents([
+            $this->makeEvent(LDContext::create('first')),
+            $this->makeEvent(LDContext::create("bad\xB1")),
+            $this->makeEvent(LDContext::create('last')),
+        ]);
+
+        $decoded = json_decode($json, true);
+        $this->assertCount(2, $decoded);
+        $this->assertSame('first', $decoded[0]['context']['key']);
+        $this->assertSame('last', $decoded[1]['context']['key']);
+    }
+
+    public function testEventWithNonFiniteNumberIsDropped()
+    {
+        $es = new EventSerializer([]);
+        $custom = [
+            'kind' => 'custom',
+            'creationDate' => 1000000,
+            'key' => 'metric',
+            'context' => LDContext::create('user-key'),
+            'metricValue' => NAN,
+        ];
+
+        $json = $es->serializeEvents([$custom, $this->makeEvent(LDContext::create('user-key'))]);
+
+        $decoded = json_decode($json, true);
+        $this->assertCount(1, $decoded);
+        $this->assertSame('identify', $decoded[0]['kind']);
+    }
+
+    public function testReturnsEmptyStringWhenNoEventCanBeEncoded()
+    {
+        $es = new EventSerializer([]);
+
+        $this->assertSame('', $es->serializeEvents([$this->makeEvent(LDContext::create("bad\xB1"))]));
     }
 
     public function testContextKey()

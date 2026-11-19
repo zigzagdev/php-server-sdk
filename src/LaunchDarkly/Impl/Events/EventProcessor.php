@@ -78,6 +78,11 @@ class EventProcessor
         // We don't expect flush to be called more than once per request cycle, but let's empty the queue just in case
         $this->_queue = [];
 
+        if ($payload === '') {
+            // No event could be serialized. The serializer has logged why.
+            return false;
+        }
+
         return $this->_eventPublisher->publish($payload);
     }
 

@@ -6,6 +6,8 @@ namespace LaunchDarkly\Impl\Events;
 
 use LaunchDarkly\LDContext;
 use LaunchDarkly\Types\AttributeReference;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
 /**
  * Internal class that translates analytics events into the format used for sending them to LaunchDarkly.
@@ -18,9 +20,12 @@ class EventSerializer
     private bool $_allAttributesPrivate;
     /** @var AttributeReference[] */
     private array $_privateAttributes;
+    private LoggerInterface $_logger;
 
     public function __construct(array $options)
     {
+        $logger = $options['logger'] ?? null;
+        $this->_logger = $logger instanceof LoggerInterface ? $logger : new NullLogger();
         $this->_allAttributesPrivate = !!($options['all_attributes_private'] ?? false);
 
         $allParsedPrivate = [];
@@ -33,6 +38,14 @@ class EventSerializer
         $this->_privateAttributes = $allParsedPrivate;
     }
 
+    /**
+     * Serializes the events as a JSON array.
+     *
+     * An event that cannot be encoded as JSON, for instance because it contains a string that is not
+     * valid UTF-8 or a float that is INF or NAN, is dropped and logged. The other events are kept.
+     *
+     * @return string the JSON array, or an empty string if no event could be encoded
+     */
     public function serializeEvents(array $events): string
     {
         $filtered = [];
@@ -40,10 +53,25 @@ class EventSerializer
             $filtered[] = $this->filterEvent($e);
         }
         $ret = json_encode($filtered);
-        if ($ret === false) {
+        if ($ret !== false) {
+            return $ret;
+        }
+
+        // At least one event cannot be encoded. Encode the events one at a time to find it.
+        $encoded = [];
+        foreach ($filtered as $e) {
+            $json = json_encode($e);
+            if ($json === false) {
+                $kind = is_string($e['kind'] ?? null) ? $e['kind'] : 'unknown';
+                $this->_logger->warning("Dropped an analytics event of kind \"$kind\" that could not be encoded as JSON: " . json_last_error_msg());
+                continue;
+            }
+            $encoded[] = $json;
+        }
+        if (count($encoded) === 0) {
             return '';
         }
-        return $ret;
+        return '[' . implode(',', $encoded) . ']';
     }
 
     private function filterEvent(array $e): array
